@@ -26,7 +26,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -49,6 +48,10 @@ func (l *simpleLogger) Info(msg string, keysAndValues ...interface{}) {
 
 func (l *simpleLogger) Debug(msg string, keysAndValues ...interface{}) {
 	log.Printf("DEBUG: %s %v\n", msg, keysAndValues)
+}
+
+func (l *simpleLogger) WithValues(keysAndValues ...interface{}) logging.Logger {
+	return l // Simple implementation - ignore key/values
 }
 
 // Function implements the Crossplane Function gRPC service
@@ -279,6 +282,7 @@ func main() {
 	// Use simple logging to stderr for debugging
 	log.SetPrefix("[vault-sync] ")
 	log.SetFlags(log.LstdFlags)
+	log.Println("Starting function-vault-sync...")
 
 	// Create a simple logger wrapper
 	funcLog := &simpleLogger{}
