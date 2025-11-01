@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -324,8 +325,14 @@ func main() {
 
 	fnv1beta1.RegisterFunctionRunnerServiceServer(server, function)
 
+	// Create TCP listener on port 9443
+	listener, err := net.Listen("tcp", ":9443")
+	if err != nil {
+		log.Fatalf("Failed to listen on port 9443: %v", err)
+	}
+
 	log.Println("Starting function-vault-sync gRPC server on port 9443")
-	if err := server.Serve(nil); err != nil {
+	if err := server.Serve(listener); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
 }
