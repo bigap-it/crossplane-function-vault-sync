@@ -21,6 +21,9 @@ WORKDIR /
 # Copy the binary from builder
 COPY --from=builder /workspace/function-vault-sync /function-vault-sync
 
+# Copy package metadata (required by Crossplane)
+COPY package.yaml /package.yaml
+
 # Use non-root user
 USER 65532:65532
 

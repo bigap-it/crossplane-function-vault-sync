@@ -1,0 +1,16 @@
+apiVersion: meta.pkg.crossplane.io/v1alpha1
+kind: Function
+metadata:
+  name: function-vault-sync
+  annotations:
+    meta.crossplane.io/maintainer: BIGAP <nicolas.gapaillard@bigap.fr>
+    meta.crossplane.io/source: github.com/bigap-it/crossplane-function-vault-sync
+    meta.crossplane.io/license: Proprietary
+    meta.crossplane.io/description: |
+      Syncs Scaleway S3 credentials to HashiCorp Vault
+    meta.crossplane.io/readme: |
+      This function extracts Scaleway IAM ApiKey credentials from Crossplane
+      managed resources and syncs them to HashiCorp Vault for use with ExternalSecrets.
+spec:
+  crossplane:
+    version: ">=v1.14.0-0"
