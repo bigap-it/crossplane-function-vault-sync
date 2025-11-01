@@ -113,12 +113,15 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	// Find the ApiKey resource and extract accessKey
 	var accessKey string
+	log.Printf("[DEBUG] Searching for ApiKey in %d observed resources\n", len(observed))
 
 	for name, res := range observed {
 		if res.Resource.GetKind() == "ApiKey" {
+			log.Printf("[DEBUG] Found ApiKey resource: %s\n", name)
 			f.log.Debug("Found ApiKey resource", "name", name)
 			accessKey, err = res.Resource.GetString("status.atProvider.accessKey")
 			if err != nil {
+				log.Printf("[DEBUG] ApiKey not ready yet: %v\n", err)
 				f.log.Debug("ApiKey not ready yet", "error", err.Error())
 				// ApiKey not ready yet, return and wait for next reconciliation
 				return rsp, nil
@@ -128,32 +131,39 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	}
 
 	if accessKey == "" {
+		log.Println("[DEBUG] No ApiKey found, waiting for resources")
 		f.log.Info("No ApiKey found yet, waiting for Scaleway resources to be created")
 		return rsp, nil
 	}
 
+	log.Printf("[DEBUG] Found access key: %s...\n", accessKey[:8])
 	f.log.Info("Found access key", "accessKey", accessKey[:8]+"...")
 
 	// 4. Get secret key from Kubernetes Secret
 	// The secret name is constructed as: {appName}-s3-credentials-temp
 	secretName := fmt.Sprintf("%s-s3-credentials-temp", appName)
+	log.Printf("[DEBUG] Looking for secret: %s in crossplane-system\n", secretName)
+
 	secret := &corev1.Secret{}
 	err = f.k8sClient.Get(ctx, types.NamespacedName{
 		Name:      secretName,
 		Namespace: "crossplane-system",
 	}, secret)
 	if err != nil {
+		log.Printf("[DEBUG] Secret not ready: %v\n", err)
 		f.log.Debug("Secret not ready yet", "secret", secretName, "error", err.Error())
 		return rsp, nil
 	}
 
 	secretKeyBytes, ok := secret.Data["attribute.secret_key"]
 	if !ok {
+		log.Printf("[ERROR] Secret %s does not contain attribute.secret_key\n", secretName)
 		response.Fatal(rsp, errors.Errorf("secret %s does not contain attribute.secret_key", secretName))
 		return rsp, nil
 	}
 
 	secretKey := string(secretKeyBytes)
+	log.Println("[DEBUG] Retrieved secret key from Kubernetes Secret")
 	f.log.Info("Retrieved secret key from Kubernetes Secret")
 
 	// 5. Get Vault token from vault-root-token secret
