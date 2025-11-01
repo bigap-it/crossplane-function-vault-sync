@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 	"github.com/crossplane/function-sdk-go/request"
 	"github.com/crossplane/function-sdk-go/response"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,9 +34,11 @@ import (
 const (
 	defaultVaultAddress = "http://vault.vault-system:8200"
 	defaultVaultMount   = "secret"
-	secretNamespace     = "crossplane-system"
+
 	vaultTokenSecret    = "vault-root-token"
 	vaultTokenNamespace = "vault-system"
+	
+	tlsCertDir = "/tls/server"
 )
 
 // Function implements the Crossplane Function gRPC service
@@ -60,22 +64,22 @@ type VaultPayload struct {
 	Data map[string]string `json:"data"`
 }
 
-// RunFunction executes the function logic
+// RunFunction implements the function logic
 func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRequest) (*fnv1beta1.RunFunctionResponse, error) {
-	f.log.Info("Running Vault sync function")
+	f.log.Info("RunFunction called")
 
 	rsp := response.To(req, response.DefaultTTL)
 
-	// 1. Get the observed composite resource (AppBackupBucket)
+	// 1. Get composite resource (AppBackupBucket)
 	oxr, err := request.GetObservedCompositeResource(req)
 	if err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot get observed composite resource"))
 		return rsp, nil
 	}
 
-	appName, err := oxr.Resource.GetString("metadata.name")
-	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot get app name from composite"))
+	appName := oxr.Resource.GetName()
+	if appName == "" {
+		response.Fatal(rsp, errors.New("composite resource has no name"))
 		return rsp, nil
 	}
 
@@ -122,62 +126,61 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	}
 
 	if accessKey == "" {
-		f.log.Info("ApiKey accessKey not available yet, waiting...")
+		f.log.Info("No ApiKey found yet, waiting for Scaleway resources to be created")
 		return rsp, nil
 	}
 
-	f.log.Info("Found accessKey", "accessKey", accessKey[:8]+"...")
+	f.log.Info("Found access key", "accessKey", accessKey[:8]+"...")
 
-	// 4. Read the Kubernetes Secret containing the secret key
+	// 4. Get secret key from Kubernetes Secret
+	// The secret name is constructed as: {appName}-s3-credentials-temp
 	secretName := fmt.Sprintf("%s-s3-credentials-temp", appName)
 	secret := &corev1.Secret{}
-
 	err = f.k8sClient.Get(ctx, types.NamespacedName{
 		Name:      secretName,
-		Namespace: secretNamespace,
+		Namespace: "crossplane-system",
 	}, secret)
-
 	if err != nil {
-		f.log.Info("Secret not ready yet", "secret", secretName, "error", err.Error())
+		f.log.Debug("Secret not ready yet", "secret", secretName, "error", err.Error())
 		return rsp, nil
 	}
 
-	// Extract secret_key from the secret
-	secretKeyB64, ok := secret.Data["attribute.secret_key"]
+	secretKeyBytes, ok := secret.Data["attribute.secret_key"]
 	if !ok {
-		response.Fatal(rsp, errors.New("attribute.secret_key not found in secret"))
+		response.Fatal(rsp, errors.Errorf("secret %s does not contain attribute.secret_key", secretName))
 		return rsp, nil
 	}
 
-	secretKey := string(secretKeyB64)
-	f.log.Info("Found secretKey", "length", len(secretKey))
+	secretKey := string(secretKeyBytes)
+	f.log.Info("Retrieved secret key from Kubernetes Secret")
 
-	// 5. Get Vault token
-	vaultToken, err := f.getVaultToken(ctx)
+	// 5. Get Vault token from vault-root-token secret
+	vaultTokenSecret := &corev1.Secret{}
+	err = f.k8sClient.Get(ctx, types.NamespacedName{
+		Name:      "vault-root-token",
+		Namespace: "vault-system",
+	}, vaultTokenSecret)
 	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot get Vault token"))
+		response.Fatal(rsp, errors.Wrapf(err, "cannot get Vault token secret"))
 		return rsp, nil
 	}
 
-	// 6. Prepare payload for Vault
-	bucket, _ := oxr.Resource.GetString("spec.bucket")
-	if bucket == "" {
-		bucket = "bigap-backups"
+	vaultToken := string(vaultTokenSecret.Data["token"])
+	if vaultToken == "" {
+		response.Fatal(rsp, errors.New("vault token is empty"))
+		return rsp, nil
 	}
 
-	region, _ := oxr.Resource.GetString("spec.region")
-	if region == "" {
-		region = "fr-par"
-	}
+	f.log.Info("Retrieved Vault token")
 
-	payload := VaultPayload{
+	// 6. Prepare Vault payload
+	payload := &VaultPayload{
 		Data: map[string]string{
-			"access_key_id":     accessKey,
-			"secret_access_key": secretKey,
-			"endpoint":          fmt.Sprintf("https://s3.%s.scw.cloud", region),
-			"region":            region,
-			"bucket":            bucket,
-			"s3_prefix":         appName + "/",
+			"access_key": accessKey,
+			"secret_key": secretKey,
+			"bucket":     "bigap-backups",
+			"region":     "fr-par",
+			"endpoint":   "s3.fr-par.scw.cloud",
 		},
 	}
 
@@ -191,19 +194,8 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	f.log.Info("Successfully synced credentials to Vault", "path", vaultPath)
 
-	// 8. Update the composite resource status
-	dxr, err := request.GetDesiredCompositeResource(req)
-	if err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot get desired composite resource"))
-		return rsp, nil
-	}
-
-	// Update status fields
-	_ = dxr.Resource.SetString("status.vaultSyncStatus", "synced")
-	_ = dxr.Resource.SetString("status.lastSyncTime", time.Now().UTC().Format(time.RFC3339))
-	_ = dxr.Resource.SetString("status.vaultPath", vaultPath)
-
-	if err := response.SetDesiredCompositeResource(rsp, dxr); err != nil {
+	// 8. Update composite status
+	if err := response.SetDesiredCompositeResource(rsp, oxr.Resource); err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "cannot set desired composite resource"))
 		return rsp, nil
 	}
@@ -211,45 +203,19 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	return rsp, nil
 }
 
-// getVaultToken retrieves the Vault root token from Kubernetes
-func (f *Function) getVaultToken(ctx context.Context) (string, error) {
-	secret := &corev1.Secret{}
-	err := f.k8sClient.Get(ctx, types.NamespacedName{
-		Name:      vaultTokenSecret,
-		Namespace: vaultTokenNamespace,
-	}, secret)
+// pushToVault sends credentials to Vault KV v2
+func (f *Function) pushToVault(ctx context.Context, vaultAddr, path, token string, payload *VaultPayload) error {
+	// Vault KV v2 API path: /v1/{mount}/data/{path}
+	url := fmt.Sprintf("%s/v1/%s", vaultAddr, path)
 
+	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", errors.Wrapf(err, "cannot get vault token secret")
+		return errors.Wrap(err, "cannot marshal payload")
 	}
 
-	tokenB64, ok := secret.Data["token"]
-	if !ok {
-		return "", errors.New("token key not found in vault secret")
-	}
-
-	// Decode if it's base64 encoded
-	token, err := base64.StdEncoding.DecodeString(string(tokenB64))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(payloadBytes)))
 	if err != nil {
-		// If decode fails, assume it's already plain text
-		return string(tokenB64), nil
-	}
-
-	return string(token), nil
-}
-
-// pushToVault sends credentials to Vault via HTTP API
-func (f *Function) pushToVault(ctx context.Context, vaultAddr, path, token string, payload VaultPayload) error {
-	url := fmt.Sprintf("%s/v1/%s", strings.TrimSuffix(vaultAddr, "/"), path)
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return errors.Wrapf(err, "cannot marshal payload")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(jsonData)))
-	if err != nil {
-		return errors.Wrapf(err, "cannot create HTTP request")
+		return errors.Wrap(err, "cannot create HTTP request")
 	}
 
 	req.Header.Set("X-Vault-Token", token)
@@ -258,13 +224,13 @@ func (f *Function) pushToVault(ctx context.Context, vaultAddr, path, token strin
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return errors.Wrapf(err, "HTTP request failed")
+		return errors.Wrap(err, "cannot send HTTP request to Vault")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
-		return errors.Errorf("Vault returned HTTP %d: %s", resp.StatusCode, string(body))
+		return errors.Errorf("Vault returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	f.log.Info("Successfully pushed to Vault", "url", url, "status", resp.StatusCode)
@@ -276,26 +242,30 @@ func setupKubernetesClient() (client.Client, *kubernetes.Clientset, error) {
 	// Try in-cluster config first
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		// Fallback to kubeconfig for local development
-		config, err = clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+		// Fall back to kubeconfig
+		kubeconfig := os.Getenv("KUBECONFIG")
+		if kubeconfig == "" {
+			kubeconfig = os.Getenv("HOME") + "/.kube/config"
+		}
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "cannot create kubernetes config")
+			return nil, nil, errors.Wrap(err, "cannot create Kubernetes config")
 		}
 	}
 
-	// Create controller-runtime client
 	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, nil, errors.Wrap(err, "cannot add core/v1 to scheme")
+	}
 
 	k8sClient, err := client.New(config, client.Options{Scheme: scheme})
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create kubernetes client")
+		return nil, nil, errors.Wrap(err, "cannot create Kubernetes client")
 	}
 
-	// Create clientset for additional operations
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "cannot create kubernetes clientset")
+		return nil, nil, errors.Wrap(err, "cannot create Kubernetes clientset")
 	}
 
 	return k8sClient, clientset, nil
@@ -319,8 +289,24 @@ func main() {
 		clientset: clientset,
 	}
 
+	// Load TLS certificates
+	certFile := tlsCertDir + "/tls.crt"
+	keyFile := tlsCertDir + "/tls.key"
+	
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatalf("Failed to load TLS certificates: %v", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.NoClientCert,
+	}
+
+	creds := credentials.NewTLS(tlsConfig)
+
 	server := grpc.NewServer(
-		grpc.Creds(insecure.NewCredentials()),
+		grpc.Creds(creds),
 	)
 
 	fnv1beta1.RegisterFunctionRunnerServiceServer(server, function)
@@ -331,7 +317,7 @@ func main() {
 		log.Fatalf("Failed to listen on port 9443: %v", err)
 	}
 
-	log.Println("Starting function-vault-sync gRPC server on port 9443")
+	log.Println("Starting function-vault-sync gRPC server with TLS on port 9443")
 	if err := server.Serve(listener); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
