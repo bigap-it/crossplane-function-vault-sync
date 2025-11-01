@@ -47,6 +47,10 @@ type Function struct {
 
 // Parameters defines the input schema for this function
 type Parameters struct {
+	Spec ParametersSpec `json:"spec,omitempty"`
+}
+
+type ParametersSpec struct {
 	VaultAddress string `json:"vaultAddress,omitempty"`
 	VaultMount   string `json:"vaultMount,omitempty"`
 }
@@ -79,20 +83,14 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	// 2. Parse function input parameters
 	params := &Parameters{
-		VaultAddress: defaultVaultAddress,
-		VaultMount:   defaultVaultMount,
+		Spec: ParametersSpec{
+			VaultAddress: defaultVaultAddress,
+			VaultMount:   defaultVaultMount,
+		},
 	}
 
-	if req.Input != nil {
-		input := &resource.Unstructured{}
-		if err := input.From(req.Input); err == nil {
-			if addr, err := input.GetString("spec.vaultAddress"); err == nil && addr != "" {
-				params.VaultAddress = addr
-			}
-			if mount, err := input.GetString("spec.vaultMount"); err == nil && mount != "" {
-				params.VaultMount = mount
-			}
-		}
+	if err := request.GetInput(req, params); err != nil {
+		f.log.Debug("Using default Vault parameters", "error", err.Error())
 	}
 
 	// 3. Get observed composed resources to find the ApiKey
@@ -104,7 +102,6 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	// Find the ApiKey resource and extract accessKey
 	var accessKey string
-	apiKeyName := fmt.Sprintf("%s-s3-apikey", appName)
 
 	for name, res := range observed {
 		if res.Resource.GetKind() == "ApiKey" {
@@ -180,8 +177,8 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	}
 
 	// 7. Push to Vault
-	vaultPath := fmt.Sprintf("%s/%s/s3-backup", params.VaultMount, appName)
-	err = f.pushToVault(ctx, params.VaultAddress, vaultPath, vaultToken, payload)
+	vaultPath := fmt.Sprintf("%s/%s/s3-backup", params.Spec.VaultMount, appName)
+	err = f.pushToVault(ctx, params.Spec.VaultAddress, vaultPath, vaultToken, payload)
 	if err != nil {
 		response.Fatal(rsp, errors.Wrapf(err, "failed to push to Vault"))
 		return rsp, nil
