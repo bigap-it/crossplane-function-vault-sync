@@ -42,15 +42,15 @@ const (
 // simpleLogger implements logging.Logger interface using standard log
 type simpleLogger struct{}
 
-func (l *simpleLogger) Info(msg string, keysAndValues ...interface{}) {
+func (l *simpleLogger) Info(msg string, keysAndValues ...any) {
 	log.Printf("INFO: %s %v\n", msg, keysAndValues)
 }
 
-func (l *simpleLogger) Debug(msg string, keysAndValues ...interface{}) {
+func (l *simpleLogger) Debug(msg string, keysAndValues ...any) {
 	log.Printf("DEBUG: %s %v\n", msg, keysAndValues)
 }
 
-func (l *simpleLogger) WithValues(keysAndValues ...interface{}) logging.Logger {
+func (l *simpleLogger) WithValues(keysAndValues ...any) logging.Logger {
 	return l // Simple implementation - ignore key/values
 }
 
