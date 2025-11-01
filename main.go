@@ -89,8 +89,11 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	}
 
 	if req.Input != nil {
-		if err := json.Unmarshal(req.Input.Value, params); err != nil {
-			f.log.Debug("Using default Vault parameters", "error", err.Error())
+		inputBytes, err := json.Marshal(req.Input.AsMap())
+		if err == nil {
+			if err := json.Unmarshal(inputBytes, params); err != nil {
+				f.log.Debug("Using default Vault parameters", "error", err.Error())
+			}
 		}
 	}
 
