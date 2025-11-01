@@ -26,6 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -38,21 +39,6 @@ const (
 	
 	tlsCertDir = "/tls/server"
 )
-
-// simpleLogger implements logging.Logger interface using standard log
-type simpleLogger struct{}
-
-func (l *simpleLogger) Info(msg string, keysAndValues ...any) {
-	log.Printf("INFO: %s %v\n", msg, keysAndValues)
-}
-
-func (l *simpleLogger) Debug(msg string, keysAndValues ...any) {
-	log.Printf("DEBUG: %s %v\n", msg, keysAndValues)
-}
-
-func (l *simpleLogger) WithValues(keysAndValues ...any) logging.Logger {
-	return l // Simple implementation - ignore key/values
-}
 
 // Function implements the Crossplane Function gRPC service
 type Function struct {
@@ -79,6 +65,7 @@ type VaultPayload struct {
 
 // RunFunction implements the function logic
 func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRequest) (*fnv1beta1.RunFunctionResponse, error) {
+	log.Println("[DEBUG] RunFunction called")
 	f.log.Info("RunFunction called")
 
 	rsp := response.To(req, response.DefaultTTL)
@@ -92,10 +79,12 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	appName := oxr.Resource.GetName()
 	if appName == "" {
+		log.Println("[ERROR] Composite resource has no name")
 		response.Fatal(rsp, errors.New("composite resource has no name"))
 		return rsp, nil
 	}
 
+	log.Printf("[DEBUG] Processing AppBackupBucket: %s\n", appName)
 	f.log.Info("Processing AppBackupBucket", "app", appName)
 
 	// 2. Parse function input parameters
@@ -199,12 +188,16 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 
 	// 7. Push to Vault
 	vaultPath := fmt.Sprintf("%s/%s/s3-backup", params.Spec.VaultMount, appName)
+	log.Printf("[DEBUG] Pushing to Vault: %s at %s\n", vaultPath, params.Spec.VaultAddress)
+
 	err = f.pushToVault(ctx, params.Spec.VaultAddress, vaultPath, vaultToken, payload)
 	if err != nil {
+		log.Printf("[ERROR] Failed to push to Vault: %v\n", err)
 		response.Fatal(rsp, errors.Wrapf(err, "failed to push to Vault"))
 		return rsp, nil
 	}
 
+	log.Printf("[SUCCESS] Synced credentials to Vault at %s\n", vaultPath)
 	f.log.Info("Successfully synced credentials to Vault", "path", vaultPath)
 
 	return rsp, nil
@@ -279,13 +272,9 @@ func setupKubernetesClient() (client.Client, *kubernetes.Clientset, error) {
 }
 
 func main() {
-	// Use simple logging to stderr for debugging
-	log.SetPrefix("[vault-sync] ")
-	log.SetFlags(log.LstdFlags)
-	log.Println("Starting function-vault-sync...")
-
-	// Create a simple logger wrapper
-	funcLog := &simpleLogger{}
+	// Setup logging using controller-runtime
+	logger := ctrl.Log.WithName("function-vault-sync")
+	funcLog := logging.NewLogrLogger(logger)
 
 	// Setup Kubernetes client
 	k8sClient, clientset, err := setupKubernetesClient()
