@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -193,12 +192,6 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 	}
 
 	f.log.Info("Successfully synced credentials to Vault", "path", vaultPath)
-
-	// 8. Update composite status
-	if err := response.SetDesiredCompositeResource(rsp, oxr.Resource); err != nil {
-		response.Fatal(rsp, errors.Wrapf(err, "cannot set desired composite resource"))
-		return rsp, nil
-	}
 
 	return rsp, nil
 }
