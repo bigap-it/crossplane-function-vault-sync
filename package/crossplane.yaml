@@ -1,0 +1,40 @@
+apiVersion: meta.pkg.crossplane.io/v1alpha1
+kind: Function
+metadata:
+  name: function-vault-sync
+  annotations:
+    meta.crossplane.io/maintainer: BIGAP <tech@bigap.fr>
+    meta.crossplane.io/source: github.com/bigap-it/crossplane-function-vault-sync
+    meta.crossplane.io/license: Proprietary
+    meta.crossplane.io/description: |
+      Syncs Scaleway S3 credentials from Kubernetes to HashiCorp Vault.
+
+      This function reads the access key from Scaleway ApiKey resource status
+      and the secret key from Kubernetes Secret, then pushes both to Vault.
+    meta.crossplane.io/readme: |
+      # Function Vault Sync
+
+      Automatically syncs Scaleway S3 backup credentials to Vault.
+
+      ## Features
+      - Native Kubernetes API access (no kubectl needed)
+      - Reads ApiKey.status.atProvider.accessKey
+      - Reads Secret.data["attribute.secret_key"]
+      - Pushes to Vault via HTTP API
+      - Updates AppBackupBucket status
+
+      ## Usage
+
+      ```yaml
+      - step: sync-to-vault
+        functionRef:
+          name: function-vault-sync
+        input:
+          apiVersion: vault.fn.bigap.fr/v1beta1
+          kind: Parameters
+          spec:
+            vaultAddress: http://vault.vault-system:8200
+            vaultMount: secret
+      ```
+spec:
+  # No custom CRDs needed
