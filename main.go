@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -298,17 +300,19 @@ func setupKubernetesClient() (client.Client, *kubernetes.Clientset, error) {
 }
 
 func main() {
-	log := logging.NewLogrLogger()
+	// Setup logging using controller-runtime
+	logger := ctrl.Log.WithName("function-vault-sync")
+	funcLog := logging.NewLogrLogger(logger)
 
 	// Setup Kubernetes client
 	k8sClient, clientset, err := setupKubernetesClient()
 	if err != nil {
-		log.Fatal(err, "Failed to setup Kubernetes client")
+		log.Fatalf("Failed to setup Kubernetes client: %v", err)
 	}
 
 	// Create and start the gRPC server
 	function := &Function{
-		log:       log,
+		log:       funcLog,
 		k8sClient: k8sClient,
 		clientset: clientset,
 	}
@@ -319,8 +323,8 @@ func main() {
 
 	fnv1beta1.RegisterFunctionRunnerServiceServer(server, function)
 
-	log.Info("Starting function-vault-sync gRPC server", "port", 9443)
+	log.Println("Starting function-vault-sync gRPC server on port 9443")
 	if err := server.Serve(nil); err != nil {
-		log.Fatal(err, "Failed to serve")
+		log.Fatalf("Failed to serve: %v", err)
 	}
 }
