@@ -40,6 +40,17 @@ const (
 	tlsCertDir = "/tls/server"
 )
 
+// simpleLogger implements logging.Logger interface using standard log
+type simpleLogger struct{}
+
+func (l *simpleLogger) Info(msg string, keysAndValues ...interface{}) {
+	log.Printf("INFO: %s %v\n", msg, keysAndValues)
+}
+
+func (l *simpleLogger) Debug(msg string, keysAndValues ...interface{}) {
+	log.Printf("DEBUG: %s %v\n", msg, keysAndValues)
+}
+
 // Function implements the Crossplane Function gRPC service
 type Function struct {
 	fnv1beta1.UnimplementedFunctionRunnerServiceServer
@@ -265,9 +276,12 @@ func setupKubernetesClient() (client.Client, *kubernetes.Clientset, error) {
 }
 
 func main() {
-	// Setup logging using controller-runtime
-	logger := ctrl.Log.WithName("function-vault-sync")
-	funcLog := logging.NewLogrLogger(logger)
+	// Use simple logging to stderr for debugging
+	log.SetPrefix("[vault-sync] ")
+	log.SetFlags(log.LstdFlags)
+
+	// Create a simple logger wrapper
+	funcLog := &simpleLogger{}
 
 	// Setup Kubernetes client
 	k8sClient, clientset, err := setupKubernetesClient()
