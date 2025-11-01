@@ -15,7 +15,6 @@ import (
 	"github.com/crossplane/function-sdk-go/logging"
 	fnv1beta1 "github.com/crossplane/function-sdk-go/proto/v1beta1"
 	"github.com/crossplane/function-sdk-go/request"
-	"github.com/crossplane/function-sdk-go/resource"
 	"github.com/crossplane/function-sdk-go/response"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -89,8 +88,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1beta1.RunFunctionRe
 		},
 	}
 
-	if err := request.GetInput(req, params); err != nil {
-		f.log.Debug("Using default Vault parameters", "error", err.Error())
+	if req.Input != nil {
+		if err := json.Unmarshal(req.Input.Value, params); err != nil {
+			f.log.Debug("Using default Vault parameters", "error", err.Error())
+		}
 	}
 
 	// 3. Get observed composed resources to find the ApiKey
